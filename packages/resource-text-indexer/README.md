@@ -24,6 +24,26 @@ kpt live apply resource-text-indexer --reconcile-timeout=2m --output=table
 kubectl apply -k "https://github.com/FloSch62/resource-indexer//packages/resource-text-indexer?ref=main"
 ```
 
+## Uninstall
+
+### Uninstall with kpt
+
+```bash
+kpt live destroy resource-text-indexer --output=table
+```
+
+### Uninstall with kubectl (no clone)
+
+```bash
+kubectl delete -k "https://github.com/FloSch62/resource-indexer//packages/resource-text-indexer?ref=main"
+```
+
+### Uninstall with local clone
+
+```bash
+kubectl delete -k .
+```
+
 ## Container image
 
 Use a persistent image registry (for example GHCR, ECR, GCR, or ACR), not `ttl.sh`.

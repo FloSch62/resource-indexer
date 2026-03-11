@@ -11,6 +11,16 @@ Use the prebuilt image from this repo (`ghcr.io/flosch62/resource-indexer:v0.3.0
 kubectl apply -k "https://github.com/FloSch62/resource-indexer//packages/resource-text-indexer?ref=main"
 ```
 
+## Uninstall
+
+If you installed with the command above:
+
+```bash
+kubectl delete -k "https://github.com/FloSch62/resource-indexer//packages/resource-text-indexer?ref=main"
+```
+
+This removes all deployed resources for the indexer.
+
 ## What it serves
 
 - `GET /resources.txt`: plain-text lines in format `<namespace>/<apiVersion>/<kind>/<name> labels=<json-object>`
