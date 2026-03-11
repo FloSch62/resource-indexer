@@ -1,0 +1,34 @@
+# Go build artifacts
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+*.coverprofile
+coverage.out
+cover.out
+
+# Local build output
+/bin/
+/dist/
+/out/
+
+# Dependency directories (optional local use)
+/vendor/
+
+# IDE/editor
+.idea/
+.vscode/
+*.swp
+*~
+
+# OS junk
+.DS_Store
+Thumbs.db
+
+# Local env/config
+.env
+.env.*
+
