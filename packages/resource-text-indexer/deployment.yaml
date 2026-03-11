@@ -19,7 +19,7 @@ spec:
       containers:
         - name: app
           # Use a persistent registry image (for example GHCR/ECR/GCR/ACR), not ttl.sh.
-          image: ghcr.io/flosch62/resource-indexer:v0.2.0
+          image: ghcr.io/flosch62/resource-indexer:v0.3.0
           imagePullPolicy: IfNotPresent
           env:
             - name: PORT

@@ -3,6 +3,7 @@ package store
 import (
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 )
@@ -13,14 +14,33 @@ type Record struct {
 	Kind       string `json:"kind"`
 	Namespace  string `json:"namespace"`
 	Name       string `json:"name"`
+	Labels     map[string]string `json:"labels"`
 	Group      string `json:"group"`
 	Version    string `json:"version"`
 }
 
 // Line returns the canonical plain-text format:
-// <namespace>/<apiVersion>/<kind>/<name>
+// <namespace>/<apiVersion>/<kind>/<name> labels=<quoted-json-map>
 func (r Record) Line() string {
-	return fmt.Sprintf("%s/%s/%s/%s", r.Namespace, r.APIVersion, r.Kind, r.Name)
+	base := fmt.Sprintf("%s/%s/%s/%s", r.Namespace, r.APIVersion, r.Kind, r.Name)
+	return base + " labels=" + formatLabels(r.Labels)
+}
+
+func formatLabels(labels map[string]string) string {
+	if len(labels) == 0 {
+		return "{}"
+	}
+	keys := make([]string, 0, len(labels))
+	for k := range labels {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+
+	parts := make([]string, 0, len(keys))
+	for _, k := range keys {
+		parts = append(parts, strconv.Quote(k)+":"+strconv.Quote(labels[k]))
+	}
+	return "{" + strings.Join(parts, ",") + "}"
 }
 
 // Filters limit snapshot output.
