@@ -6,7 +6,7 @@ import (
 )
 
 func TestLoadDefaults(t *testing.T) {
-	for _, key := range []string{"PORT", "MAX_PAGE_SIZE", "RESYNC_PERIOD", "DISCOVERY_INTERVAL", "EXCLUDE_GVRS", "EXCLUDE_NAMESPACES"} {
+	for _, key := range []string{"PORT", "MAX_PAGE_SIZE", "RESYNC_PERIOD", "EXCLUDE_GVRS", "EXCLUDE_NAMESPACES"} {
 		_ = os.Unsetenv(key)
 	}
 	cfg, err := Load()
