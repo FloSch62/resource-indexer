@@ -9,39 +9,33 @@ import (
 )
 
 const (
-	defaultPort            = "8080"
-	defaultMaxPageSize     = 5000
-	defaultResyncPeriod    = 10 * time.Minute
-	defaultDiscoveryPeriod = 60 * time.Second
+	defaultPort         = "8080"
+	defaultMaxPageSize  = 5000
+	defaultResyncPeriod = 10 * time.Minute
 )
 
 // Config holds runtime behavior configured by environment variables.
 type Config struct {
-	Port            string
-	MaxPageSize     int
-	ResyncPeriod    time.Duration
-	DiscoveryPeriod time.Duration
-	ExcludeGVRs     map[string]struct{}
-	ExcludeNS       map[string]struct{}
+	Port         string
+	MaxPageSize  int
+	ResyncPeriod time.Duration
+	ExcludeGVRs  map[string]struct{}
+	ExcludeNS    map[string]struct{}
 }
 
 func Load() (Config, error) {
 	cfg := Config{
-		Port:            getEnv("PORT", defaultPort),
-		MaxPageSize:     defaultMaxPageSize,
-		ResyncPeriod:    defaultResyncPeriod,
-		DiscoveryPeriod: defaultDiscoveryPeriod,
-		ExcludeGVRs:     parseSet(os.Getenv("EXCLUDE_GVRS")),
-		ExcludeNS:       parseSet(os.Getenv("EXCLUDE_NAMESPACES")),
+		Port:         getEnv("PORT", defaultPort),
+		MaxPageSize:  defaultMaxPageSize,
+		ResyncPeriod: defaultResyncPeriod,
+		ExcludeGVRs:  parseSet(os.Getenv("EXCLUDE_GVRS")),
+		ExcludeNS:    parseSet(os.Getenv("EXCLUDE_NAMESPACES")),
 	}
 
 	if err := parseIntEnv("MAX_PAGE_SIZE", &cfg.MaxPageSize, 100, 100000); err != nil {
 		return Config{}, err
 	}
 	if err := parseDurationEnv("RESYNC_PERIOD", &cfg.ResyncPeriod); err != nil {
-		return Config{}, err
-	}
-	if err := parseDurationEnv("DISCOVERY_INTERVAL", &cfg.DiscoveryPeriod); err != nil {
 		return Config{}, err
 	}
 

@@ -50,7 +50,6 @@ func main() {
 		cfg.ExcludeGVRs,
 		cfg.ExcludeNS,
 		cfg.ResyncPeriod,
-		cfg.DiscoveryPeriod,
 	)
 
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
