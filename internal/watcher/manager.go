@@ -317,7 +317,7 @@ func (m *Manager) handleUpsert(obj interface{}, gvk schema.GroupVersionKind) {
 		return
 	}
 
-	apiVersion := meta.GetAPIVersion()
+	apiVersion := meta.APIVersion
 	if apiVersion == "" {
 		if gvk.Group == "" {
 			apiVersion = gvk.Version
@@ -325,7 +325,7 @@ func (m *Manager) handleUpsert(obj interface{}, gvk schema.GroupVersionKind) {
 			apiVersion = gvk.Group + "/" + gvk.Version
 		}
 	}
-	kind := meta.GetKind()
+	kind := meta.Kind
 	if kind == "" {
 		kind = gvk.Kind
 	}
@@ -357,7 +357,7 @@ func (m *Manager) handleDelete(obj interface{}, gvk schema.GroupVersionKind) {
 		return
 	}
 
-	apiVersion := meta.GetAPIVersion()
+	apiVersion := meta.APIVersion
 	if apiVersion == "" {
 		if gvk.Group == "" {
 			apiVersion = gvk.Version
@@ -365,7 +365,7 @@ func (m *Manager) handleDelete(obj interface{}, gvk schema.GroupVersionKind) {
 			apiVersion = gvk.Group + "/" + gvk.Version
 		}
 	}
-	kind := meta.GetKind()
+	kind := meta.Kind
 	if kind == "" {
 		kind = gvk.Kind
 	}
