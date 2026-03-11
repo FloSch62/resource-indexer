@@ -12,30 +12,28 @@ import (
 	"resource-list/internal/store"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/discovery"
-	"k8s.io/client-go/dynamic"
-	"k8s.io/client-go/dynamic/dynamicinformer"
+	"k8s.io/client-go/metadata"
+	"k8s.io/client-go/metadata/metadatainformer"
 	"k8s.io/client-go/tools/cache"
 )
 
 type Manager struct {
 	log *log.Logger
 
-	dynamicClient dynamic.Interface
-	discovery     discovery.DiscoveryInterface
-	store         *store.Store
+	metadataClient metadata.Interface
+	discovery      discovery.DiscoveryInterface
+	store          *store.Store
 
 	excludeGVR map[string]struct{}
 	excludeNS  map[string]struct{}
 
 	resyncPeriod time.Duration
 
-	mu           sync.Mutex
-	started      map[string]*informerEntry
-	crdIDsByName map[string]map[string]struct{}
-	ready        atomic.Bool
+	mu      sync.Mutex
+	started map[string]*informerEntry
+	ready   atomic.Bool
 }
 
 type informerEntry struct {
@@ -49,7 +47,7 @@ type informerTarget struct {
 
 func New(
 	logger *log.Logger,
-	dynamicClient dynamic.Interface,
+	metadataClient metadata.Interface,
 	discoveryClient discovery.DiscoveryInterface,
 	s *store.Store,
 	excludeGVR map[string]struct{},
@@ -57,15 +55,14 @@ func New(
 	resyncPeriod time.Duration,
 ) *Manager {
 	return &Manager{
-		log:           logger,
-		dynamicClient: dynamicClient,
-		discovery:     discoveryClient,
-		store:         s,
-		excludeGVR:    excludeGVR,
-		excludeNS:     excludeNS,
-		resyncPeriod:  resyncPeriod,
-		started:       make(map[string]*informerEntry),
-		crdIDsByName:  make(map[string]map[string]struct{}),
+		log:            logger,
+		metadataClient: metadataClient,
+		discovery:      discoveryClient,
+		store:          s,
+		excludeGVR:     excludeGVR,
+		excludeNS:      excludeNS,
+		resyncPeriod:   resyncPeriod,
+		started:        make(map[string]*informerEntry),
 	}
 }
 
@@ -94,8 +91,8 @@ func (m *Manager) startCRDWatcher(ctx context.Context) error {
 		Resource: "customresourcedefinitions",
 	}
 
-	crdInformer := dynamicinformer.NewFilteredDynamicInformer(
-		m.dynamicClient,
+	crdInformer := metadatainformer.NewFilteredMetadataInformer(
+		m.metadataClient,
 		crdGVR,
 		metav1.NamespaceAll,
 		m.resyncPeriod,
@@ -104,14 +101,24 @@ func (m *Manager) startCRDWatcher(ctx context.Context) error {
 	).Informer()
 
 	_, err := crdInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
-		AddFunc: func(obj interface{}) {
-			m.reconcileCRD(ctx, obj)
+		AddFunc: func(_ interface{}) {
+			if err := m.syncResources(ctx); err != nil {
+				m.log.Printf("sync after CRD add failed: %v", err)
+			}
 		},
-		UpdateFunc: func(_ interface{}, newObj interface{}) {
-			m.reconcileCRD(ctx, newObj)
+		UpdateFunc: func(_ interface{}, _ interface{}) {
+			if err := m.syncResources(ctx); err != nil {
+				m.log.Printf("sync after CRD update failed: %v", err)
+			}
 		},
 		DeleteFunc: func(obj interface{}) {
-			m.handleCRDDelete(obj)
+			name := crdName(obj)
+			if name == "" {
+				return
+			}
+			if err := m.syncResources(ctx); err != nil {
+				m.log.Printf("sync after CRD delete %s failed: %v", name, err)
+			}
 		},
 	})
 	if err != nil {
@@ -127,15 +134,17 @@ func (m *Manager) startCRDWatcher(ctx context.Context) error {
 
 func (m *Manager) syncResources(ctx context.Context) error {
 	lists, err := m.discovery.ServerPreferredNamespacedResources()
+	partialDiscovery := false
 	if err != nil {
 		if discovery.IsGroupDiscoveryFailedError(err) {
+			partialDiscovery = true
 			m.log.Printf("partial discovery failure: %v", err)
 		} else {
 			return fmt.Errorf("discover resources: %w", err)
 		}
 	}
 
-	started := 0
+	targets := make(map[string]informerTarget)
 	for _, list := range lists {
 		gv, parseErr := schema.ParseGroupVersion(list.GroupVersion)
 		if parseErr != nil {
@@ -157,12 +166,27 @@ func (m *Manager) syncResources(ctx context.Context) error {
 				continue
 			}
 			gvk := schema.GroupVersionKind{Group: gv.Group, Version: gv.Version, Kind: apiRes.Kind}
-			if err := m.startInformer(ctx, gvr, gvk, id); err != nil {
-				m.log.Printf("start informer %s failed: %v", id, err)
-				continue
+			targets[id] = informerTarget{
+				gvr: gvr,
+				gvk: gvk,
 			}
+		}
+	}
+
+	started := 0
+	for id, target := range targets {
+		startedNew, err := m.startInformer(ctx, target.gvr, target.gvk, id)
+		if err != nil {
+				m.log.Printf("start informer %s failed: %v", id, err)
+			continue
+		}
+		if startedNew {
 			started++
 		}
+	}
+
+	if !partialDiscovery {
+		m.stopMissingInformers(targets)
 	}
 
 	if started > 0 {
@@ -171,166 +195,19 @@ func (m *Manager) syncResources(ctx context.Context) error {
 	return nil
 }
 
-func (m *Manager) reconcileCRD(ctx context.Context, obj interface{}) {
-	name, targets, ok := m.crdTargets(obj)
-	if !ok {
-		return
-	}
-
-	current := m.getCRDIDs(name)
-	next := make(map[string]struct{}, len(targets))
-
-	for id, target := range targets {
-		if err := m.startInformer(ctx, target.gvr, target.gvk, id); err != nil {
-			m.log.Printf("start informer %s for CRD %s failed: %v", id, name, err)
-			continue
-		}
-		next[id] = struct{}{}
-	}
-
-	for id := range current {
-		if _, keep := next[id]; keep {
-			continue
-		}
-		m.stopInformer(id)
-	}
-
-	m.setCRDIDs(name, next)
-}
-
-func (m *Manager) handleCRDDelete(obj interface{}) {
-	name := crdName(obj)
-	if name == "" {
-		return
-	}
-	for id := range m.getCRDIDs(name) {
-		m.stopInformer(id)
-	}
-	m.clearCRDIDs(name)
-}
-
-func (m *Manager) crdTargets(obj interface{}) (string, map[string]informerTarget, bool) {
-	u, ok := toUnstructured(obj)
-	if !ok {
-		return "", nil, false
-	}
-
-	crdName := u.GetName()
-	if crdName == "" {
-		return "", nil, false
-	}
-
-	targets := make(map[string]informerTarget)
-
-	scope, _, _ := unstructured.NestedString(u.Object, "spec", "scope")
-	if scope != "Namespaced" {
-		return crdName, targets, true
-	}
-
-	group, _, _ := unstructured.NestedString(u.Object, "spec", "group")
-	plural, _, _ := unstructured.NestedString(u.Object, "spec", "names", "plural")
-	kind, _, _ := unstructured.NestedString(u.Object, "spec", "names", "kind")
-	if group == "" || plural == "" || kind == "" {
-		return crdName, targets, true
-	}
-
-	versions, found, _ := unstructured.NestedSlice(u.Object, "spec", "versions")
-	if found && len(versions) > 0 {
-		for _, item := range versions {
-			versionEntry, ok := item.(map[string]interface{})
-			if !ok {
-				continue
-			}
-			version, _ := versionEntry["name"].(string)
-			if version == "" {
-				continue
-			}
-			if servedRaw, exists := versionEntry["served"]; exists {
-				served, ok := servedRaw.(bool)
-				if !ok || !served {
-					continue
-				}
-			}
-			m.addCRDTarget(targets, group, version, plural, kind)
-		}
-		return crdName, targets, true
-	}
-
-	legacyVersion, _, _ := unstructured.NestedString(u.Object, "spec", "version")
-	if legacyVersion != "" {
-		m.addCRDTarget(targets, group, legacyVersion, plural, kind)
-	}
-
-	return crdName, targets, true
-}
-
-func (m *Manager) addCRDTarget(targets map[string]informerTarget, group, version, plural, kind string) {
-	gvr := schema.GroupVersionResource{
-		Group:    group,
-		Version:  version,
-		Resource: plural,
-	}
-	id := gvrID(gvr)
-	if _, blocked := m.excludeGVR[id]; blocked {
-		return
-	}
-
-	targets[id] = informerTarget{
-		gvr: gvr,
-		gvk: schema.GroupVersionKind{
-			Group:   group,
-			Version: version,
-			Kind:    kind,
-		},
-	}
-}
-
 func crdName(obj interface{}) string {
-	u, ok := toUnstructured(obj)
+	meta, ok := toPartialMetadata(obj)
 	if !ok {
 		tombstone, ok := obj.(cache.DeletedFinalStateUnknown)
 		if !ok {
 			return ""
 		}
-		u, ok = toUnstructured(tombstone.Obj)
+		meta, ok = toPartialMetadata(tombstone.Obj)
 		if !ok {
 			return ""
 		}
 	}
-	return u.GetName()
-}
-
-func (m *Manager) getCRDIDs(name string) map[string]struct{} {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	existing := m.crdIDsByName[name]
-	out := make(map[string]struct{}, len(existing))
-	for id := range existing {
-		out[id] = struct{}{}
-	}
-	return out
-}
-
-func (m *Manager) setCRDIDs(name string, ids map[string]struct{}) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	if len(ids) == 0 {
-		delete(m.crdIDsByName, name)
-		return
-	}
-	copied := make(map[string]struct{}, len(ids))
-	for id := range ids {
-		copied[id] = struct{}{}
-	}
-	m.crdIDsByName[name] = copied
-}
-
-func (m *Manager) clearCRDIDs(name string) {
-	m.mu.Lock()
-	delete(m.crdIDsByName, name)
-	m.mu.Unlock()
+	return meta.GetName()
 }
 
 func (m *Manager) stopAllInformers() {
@@ -340,7 +217,6 @@ func (m *Manager) stopAllInformers() {
 		delete(m.started, id)
 		entries = append(entries, entry)
 	}
-	m.crdIDsByName = make(map[string]map[string]struct{})
 	m.mu.Unlock()
 
 	for _, entry := range entries {
@@ -348,10 +224,17 @@ func (m *Manager) stopAllInformers() {
 	}
 }
 
-func (m *Manager) startInformer(ctx context.Context, gvr schema.GroupVersionResource, gvk schema.GroupVersionKind, id string) error {
+func (m *Manager) startInformer(ctx context.Context, gvr schema.GroupVersionResource, gvk schema.GroupVersionKind, id string) (bool, error) {
+	m.mu.Lock()
+	if _, exists := m.started[id]; exists {
+		m.mu.Unlock()
+		return false, nil
+	}
+	m.mu.Unlock()
+
 	childCtx, cancel := context.WithCancel(ctx)
-	genericInformer := dynamicinformer.NewFilteredDynamicInformer(
-		m.dynamicClient,
+	genericInformer := metadatainformer.NewFilteredMetadataInformer(
+		m.metadataClient,
 		gvr,
 		metav1.NamespaceAll,
 		m.resyncPeriod,
@@ -372,14 +255,14 @@ func (m *Manager) startInformer(ctx context.Context, gvr schema.GroupVersionReso
 	})
 	if err != nil {
 		cancel()
-		return fmt.Errorf("register handlers: %w", err)
+		return false, fmt.Errorf("register handlers: %w", err)
 	}
 
 	m.mu.Lock()
 	if _, exists := m.started[id]; exists {
 		m.mu.Unlock()
 		cancel()
-		return nil
+		return false, nil
 	}
 	m.started[id] = &informerEntry{
 		cancel: cancel,
@@ -389,9 +272,24 @@ func (m *Manager) startInformer(ctx context.Context, gvr schema.GroupVersionReso
 	go informer.Run(childCtx.Done())
 	if !cache.WaitForCacheSync(childCtx.Done(), informer.HasSynced) {
 		m.stopInformer(id)
-		return fmt.Errorf("cache sync timeout")
+		return false, fmt.Errorf("cache sync timeout")
 	}
-	return nil
+	return true, nil
+}
+
+func (m *Manager) stopMissingInformers(targets map[string]informerTarget) {
+	m.mu.Lock()
+	toStop := make([]string, 0)
+	for id := range m.started {
+		if _, keep := targets[id]; !keep {
+			toStop = append(toStop, id)
+		}
+	}
+	m.mu.Unlock()
+
+	for _, id := range toStop {
+		m.stopInformer(id)
+	}
 }
 
 func (m *Manager) stopInformer(id string) {
@@ -399,12 +297,6 @@ func (m *Manager) stopInformer(id string) {
 	entry, ok := m.started[id]
 	if ok {
 		delete(m.started, id)
-	}
-	for crdName, ids := range m.crdIDsByName {
-		delete(ids, id)
-		if len(ids) == 0 {
-			delete(m.crdIDsByName, crdName)
-		}
 	}
 	m.mu.Unlock()
 
@@ -414,18 +306,18 @@ func (m *Manager) stopInformer(id string) {
 }
 
 func (m *Manager) handleUpsert(obj interface{}, gvk schema.GroupVersionKind) {
-	u, ok := toUnstructured(obj)
+	meta, ok := toPartialMetadata(obj)
 	if !ok {
 		return
 	}
-	if _, blocked := m.excludeNS[u.GetNamespace()]; blocked {
+	if _, blocked := m.excludeNS[meta.GetNamespace()]; blocked {
 		return
 	}
-	if u.GetNamespace() == "" {
+	if meta.GetNamespace() == "" {
 		return
 	}
 
-	apiVersion := u.GetAPIVersion()
+	apiVersion := meta.GetAPIVersion()
 	if apiVersion == "" {
 		if gvk.Group == "" {
 			apiVersion = gvk.Version
@@ -433,38 +325,39 @@ func (m *Manager) handleUpsert(obj interface{}, gvk schema.GroupVersionKind) {
 			apiVersion = gvk.Group + "/" + gvk.Version
 		}
 	}
-	kind := u.GetKind()
+	kind := meta.GetKind()
 	if kind == "" {
 		kind = gvk.Kind
 	}
 
-	m.store.Upsert(objectKey(apiVersion, kind, u.GetNamespace(), u.GetName()), store.Record{
+	m.store.Upsert(objectKey(apiVersion, kind, meta.GetNamespace(), meta.GetName()), store.Record{
 		APIVersion: apiVersion,
 		Kind:       kind,
-		Namespace:  u.GetNamespace(),
-		Name:       u.GetName(),
+		Namespace:  meta.GetNamespace(),
+		Name:       meta.GetName(),
+		Labels:     copyLabels(meta.GetLabels()),
 		Group:      gvk.Group,
 		Version:    gvk.Version,
 	})
 }
 
 func (m *Manager) handleDelete(obj interface{}, gvk schema.GroupVersionKind) {
-	u, ok := toUnstructured(obj)
+	meta, ok := toPartialMetadata(obj)
 	if !ok {
 		tombstone, ok := obj.(cache.DeletedFinalStateUnknown)
 		if !ok {
 			return
 		}
-		u, ok = toUnstructured(tombstone.Obj)
+		meta, ok = toPartialMetadata(tombstone.Obj)
 		if !ok {
 			return
 		}
 	}
-	if u.GetNamespace() == "" {
+	if meta.GetNamespace() == "" {
 		return
 	}
 
-	apiVersion := u.GetAPIVersion()
+	apiVersion := meta.GetAPIVersion()
 	if apiVersion == "" {
 		if gvk.Group == "" {
 			apiVersion = gvk.Version
@@ -472,11 +365,11 @@ func (m *Manager) handleDelete(obj interface{}, gvk schema.GroupVersionKind) {
 			apiVersion = gvk.Group + "/" + gvk.Version
 		}
 	}
-	kind := u.GetKind()
+	kind := meta.GetKind()
 	if kind == "" {
 		kind = gvk.Kind
 	}
-	m.store.Delete(objectKey(apiVersion, kind, u.GetNamespace(), u.GetName()))
+	m.store.Delete(objectKey(apiVersion, kind, meta.GetNamespace(), meta.GetName()))
 }
 
 func supportsWatchAndList(verbs metav1.Verbs) bool {
@@ -493,9 +386,9 @@ func supportsWatchAndList(verbs metav1.Verbs) bool {
 	return hasList && hasWatch
 }
 
-func toUnstructured(obj interface{}) (*unstructured.Unstructured, bool) {
-	u, ok := obj.(*unstructured.Unstructured)
-	return u, ok
+func toPartialMetadata(obj interface{}) (*metav1.PartialObjectMetadata, bool) {
+	meta, ok := obj.(*metav1.PartialObjectMetadata)
+	return meta, ok
 }
 
 func objectKey(apiVersion, kind, ns, name string) string {
@@ -507,4 +400,15 @@ func gvrID(gvr schema.GroupVersionResource) string {
 		return fmt.Sprintf("%s/%s", gvr.Version, gvr.Resource)
 	}
 	return fmt.Sprintf("%s/%s/%s", gvr.Group, gvr.Version, gvr.Resource)
+}
+
+func copyLabels(in map[string]string) map[string]string {
+	if len(in) == 0 {
+		return map[string]string{}
+	}
+	out := make(map[string]string, len(in))
+	for k, v := range in {
+		out[k] = v
+	}
+	return out
 }

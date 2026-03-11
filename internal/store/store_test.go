@@ -39,9 +39,13 @@ func TestLineFormat(t *testing.T) {
 		APIVersion: "core.eda.nokia.com/v1",
 		Kind:       "NodeProfile",
 		Name:       "sros-ghcr-25.7.r2",
+		Labels: map[string]string{
+			"app":                  "indexer",
+			"app.kubernetes.io/id": "abc123",
+		},
 	}
 	got := r.Line()
-	want := "default/core.eda.nokia.com/v1/NodeProfile/sros-ghcr-25.7.r2"
+	want := "default/core.eda.nokia.com/v1/NodeProfile/sros-ghcr-25.7.r2 labels={\"app\":\"indexer\",\"app.kubernetes.io/id\":\"abc123\"}"
 	if got != want {
 		t.Fatalf("unexpected line format: got %q want %q", got, want)
 	}

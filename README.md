@@ -5,7 +5,7 @@ It bootstraps watchers once at startup and watches `CustomResourceDefinition` ob
 
 ## Install ready image (quick start)
 
-Use the prebuilt image from this repo (`ghcr.io/flosch62/resource-indexer:v0.2.0`):
+Use the prebuilt image from this repo (`ghcr.io/flosch62/resource-indexer:v0.3.0`):
 
 ```bash
 kubectl apply -k "https://github.com/FloSch62/resource-indexer//packages/resource-text-indexer?ref=main"
@@ -13,11 +13,15 @@ kubectl apply -k "https://github.com/FloSch62/resource-indexer//packages/resourc
 
 ## What it serves
 
-- `GET /resources.txt`: plain-text lines in format `<namespace>/<apiVersion>/<kind>/<name>`
+- `GET /resources.txt`: plain-text lines in format `<namespace>/<apiVersion>/<kind>/<name> labels=<json-object>`
 - `GET /snapshot.json`: JSON array of the same line strings
 - `GET /`: same output as `/resources.txt`
 - `GET /healthz`
 - `GET /readyz`
+
+Line format includes labels:
+
+- `<namespace>/<apiVersion>/<kind>/<name> labels=<json-object>`
 
 Query params for `/resources.txt`, `/`, and `/snapshot.json`:
 

@@ -15,7 +15,7 @@ import (
 	"resource-list/internal/watcher"
 
 	"k8s.io/client-go/discovery"
-	"k8s.io/client-go/dynamic"
+	"k8s.io/client-go/metadata"
 	"k8s.io/client-go/rest"
 )
 
@@ -32,9 +32,9 @@ func main() {
 		logger.Fatalf("load in-cluster config: %v", err)
 	}
 
-	dyn, err := dynamic.NewForConfig(restCfg)
+	metaClient, err := metadata.NewForConfig(restCfg)
 	if err != nil {
-		logger.Fatalf("create dynamic client: %v", err)
+		logger.Fatalf("create metadata client: %v", err)
 	}
 	disc, err := discovery.NewDiscoveryClientForConfig(restCfg)
 	if err != nil {
@@ -44,7 +44,7 @@ func main() {
 	state := store.New()
 	mgr := watcher.New(
 		logger,
-		dyn,
+		metaClient,
 		disc,
 		state,
 		cfg.ExcludeGVRs,

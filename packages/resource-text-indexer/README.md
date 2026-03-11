@@ -5,7 +5,7 @@ Watches `CustomResourceDefinition` objects so new CRD kinds start being indexed 
 
 ## Endpoints
 
-- `GET /resources.txt`: one plain-text line per current resource in format `<namespace>/<apiVersion>/<kind>/<name>`
+- `GET /resources.txt`: one plain-text line per current resource in format `<namespace>/<apiVersion>/<kind>/<name> labels=<json-object>`
 - `GET /snapshot.json`: JSON array of the same line strings
 - `GET /`: same as `/resources.txt`, served with `text/html` content type (machine-oriented text)
 - `GET /healthz`, `GET /readyz`
@@ -29,7 +29,7 @@ kubectl apply -k "https://github.com/FloSch62/resource-indexer//packages/resourc
 Use a persistent image registry (for example GHCR, ECR, GCR, or ACR), not `ttl.sh`.
 
 ```bash
-export IMAGE=ghcr.io/flosch62/resource-indexer:v0.2.0
+export IMAGE=ghcr.io/flosch62/resource-indexer:v0.3.0
 docker build -t "$IMAGE" .
 docker push "$IMAGE"
 kubectl -n resource-text-indexer set image deployment/resource-text-indexer app="$IMAGE"
